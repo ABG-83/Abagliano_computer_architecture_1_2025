@@ -6,8 +6,8 @@ section .data
     error_msg   db "File operation failed", 10, 0
     size_error  db "Input file size incorrect", 10, 0
 
-    IN_SIZE     equ 4096
-    OUT_SIZE    equ 16384
+    IN_SIZE     equ 4096     ; 64x64
+    OUT_SIZE    equ 16384    ; 128x128
     WIDTH       equ 64
     OUT_WIDTH   equ 128
 
@@ -52,129 +52,205 @@ read_input:
     ret
 
 interpolate_image:
+    ; Fase 1: Calcular píxeles horizontales y verticales
     xor r12, r12        ; y in [0, 63]
-.y_loop:
+.outer_loop:
     cmp r12, WIDTH
-    jge .done
+    jge .phase2
     xor r13, r13        ; x in [0, 63]
-.x_loop:
+.inner_loop:
     cmp r13, WIDTH
     jge .next_row
 
-    ; Get P00
+    ; Calcular índices de salida (2x tamaño)
+    mov rax, r12
+    shl rax, 1          ; y*2
+    imul rax, OUT_WIDTH ; (y*2)*128
+    mov rdx, r13
+    shl rdx, 1          ; x*2
+    add rax, rdx        ; base index = (y*2)*128 + x*2
+    mov r15, rax        ; Guardar índice base
+
+    ; Obtener píxeles originales P00, P10, P01, P11
     mov rax, r12
     imul rax, WIDTH
     add rax, r13
     movzx rbx, byte [input_buf + rax]  ; P00
 
-    ; P10
+    ; Manejar bordes para P10 (derecha)
     cmp r13, WIDTH-1
     je .p10_edge
-    movzx rcx, byte [input_buf + rax + 1]
-    jmp .p01
+    movzx rcx, byte [input_buf + rax + 1] ; P10
+    jmp .get_p01
 .p10_edge:
-    mov rcx, rbx
+    mov rcx, rbx    ; Si estamos en el borde, replicar P00
 
-.p01:
+.get_p01:
+    ; Manejar bordes para P01 (abajo)
     cmp r12, WIDTH-1
     je .p01_edge
-    movzx r8, byte [input_buf + rax + WIDTH]
-    jmp .p11
+    movzx r8, byte [input_buf + rax + WIDTH] ; P01
+    jmp .get_p11
 .p01_edge:
-    mov r8, rbx
+    mov r8, rbx     ; Si estamos en el borde, replicar P00
 
-.p11:
+.get_p11:
+    ; Manejar bordes para P11 (esquina inferior derecha)
     cmp r13, WIDTH-1
-    je .p11_edge_x
+    je .p11_edge
     cmp r12, WIDTH-1
-    je .p11_edge_x
-    movzx r9, byte [input_buf + rax + WIDTH + 1]
-    jmp .interpolate
-.p11_edge_x:
-    mov r9, r8
+    je .p11_edge
+    movzx r9, byte [input_buf + rax + WIDTH + 1] ; P11
+    jmp .calc_interpolation
+.p11_edge:
+    mov r9, r8      ; Si estamos en el borde, replicar P01
 
-.interpolate:
-    ; Base output index = (2*y * 128) + 2*x
-    mov rax, r12
-    shl rax, 1
-    imul rax, OUT_WIDTH
-    mov rdx, r13
-    shl rdx, 1
-    add rax, rdx
-    mov r10, rax        ; base output index
-
-    ; Interpolation weights:
-    ; Top-left (0,0): 9P00 + 3P10 + 3P01 + 1P11
+.calc_interpolation:
+    ; === Fase 1: Píxeles horizontales y verticales ===
+    
+    ; 1. Píxel horizontal (a): (2/3)*P00 + (1/3)*P10
     mov rax, rbx
-    imul rax, 9
+    imul rax, 2
     mov rdx, rcx
-    imul rdx, 3
-    add rax, rdx
-    mov rdx, r8
-    imul rdx, 3
-    add rax, rdx
-    add rax, r9
-    shr rax, 4
-    mov [output_buf + r10], al
+    add rax, rdx    ; 2*P00 + 1*P10
+    mov rdx, 0
+    mov rsi, 3
+    div rsi         ; (2*P00 + 1*P10)/3
+    mov r10, rax    ; Guardar resultado (a)
 
-    ; Top-right (1,0): 3P00 + 9P10 + 1P01 + 3P11
+    ; 2. Píxel horizontal (b): (1/3)*P00 + (2/3)*P10
     mov rax, rbx
-    imul rax, 3
     mov rdx, rcx
-    imul rdx, 9
-    add rax, rdx
+    imul rdx, 2
+    add rax, rdx    ; 1*P00 + 2*P10
+    mov rdx, 0
+    div rsi         ; (1*P00 + 2*P10)/3
+    mov r11, rax    ; Guardar resultado (b)
+
+    ; 3. Píxel vertical (c): (2/3)*P00 + (1/3)*P01
+    mov rax, rbx
+    imul rax, 2
     mov rdx, r8
-    imul rdx, 1
-    add rax, rdx
-    mov rdx, r9
-    imul rdx, 3
-    add rax, rdx
-    shr rax, 4
-    mov rdx, r10
+    add rax, rdx    ; 2*P00 + 1*P01
+    mov rdx, 0
+    div rsi         ; (2*P00 + 1*P01)/3
+    mov r14, rax    ; Guardar resultado (c)
+
+    ; 4. Píxel vertical (g): (1/3)*P00 + (2/3)*P01
+    mov rax, rbx
+    mov rdx, r8
+    imul rdx, 2
+    add rax, rdx    ; 1*P00 + 2*P01
+    mov rdx, 0
+    div rsi         ; (1*P00 + 2*P01)/3
+    mov rdi, rax    ; Guardar resultado (g)
+
+    ; Escribir píxeles conocidos e interpolados en la salida
+    ; Posición P00 (original)
+    mov [output_buf + r15], bl
+
+    ; Posición a (horizontal)
+    mov rdx, r15
     inc rdx
-    mov [output_buf + rdx], al
+    mov [output_buf + rdx], r10b
 
-    ; Bottom-left (0,1): 3P00 + 1P10 + 9P01 + 3P11
-    mov rax, rbx
-    imul rax, 3
-    mov rdx, rcx
-    imul rdx, 1
-    add rax, rdx
-    mov rdx, r8
-    imul rdx, 9
-    add rax, rdx
-    mov rdx, r9
-    imul rdx, 3
-    add rax, rdx
-    shr rax, 4
-    mov rdx, r10
+    ; Posición b (horizontal)
+    mov rdx, r15
+    add rdx, 2
+    mov [output_buf + rdx], r11b
+
+    ; Posición P10 (original, en x+2,y)
+    mov rdx, r15
+    add rdx, 3
+    mov [output_buf + rdx], cl
+
+    ; Posición c (vertical)
+    mov rdx, r15
     add rdx, OUT_WIDTH
-    mov [output_buf + rdx], al
+    mov [output_buf + rdx], r14b
 
-    ; Bottom-right (1,1): 1P00 + 3P10 + 3P01 + 9P11
-    mov rax, rbx
-    imul rax, 1
-    mov rdx, rcx
-    imul rdx, 3
-    add rax, rdx
-    mov rdx, r8
-    imul rdx, 3
-    add rax, rdx
-    mov rdx, r9
-    imul rdx, 9
-    add rax, rdx
-    shr rax, 4
-    mov rdx, r10
+    ; Posición g (vertical)
+    mov rdx, r15
     add rdx, OUT_WIDTH
-    inc rdx
-    mov [output_buf + rdx], al
+    add rdx, OUT_WIDTH
+    mov [output_buf + rdx], dil
 
+    ; Posición P01 (original, en x,y+2)
+    mov rdx, r15
+    add rdx, OUT_WIDTH
+    add rdx, OUT_WIDTH
+    add rdx, OUT_WIDTH
+    mov [output_buf + rdx], r8b
+
+    ; Continuar con el siguiente píxel
     inc r13
-    jmp .x_loop
+    jmp .inner_loop
 
 .next_row:
     inc r12
-    jmp .y_loop
+    jmp .outer_loop
+
+.phase2:
+    ; === Fase 2: Calcular píxeles centrales (d,e,h,i) usando los interpolados ===
+    ; Ahora se necesita procesar la imagen de salida para calcular los píxeles centrales
+    xor r12, r12        ; y in [0,126], saltando de 2 en 2
+.phase2_y_loop:
+    cmp r12, OUT_WIDTH-2
+    jge .done
+    xor r13, r13        ; x in [0,126], saltando de 2 en 2
+.phase2_x_loop:
+    cmp r13, OUT_WIDTH-2
+    jge .phase2_next_row
+
+    ; Calcular índice base
+    mov rax, r12
+    imul rax, OUT_WIDTH
+    add rax, r13
+    mov r15, rax        ; Guardar índice base
+
+    ; Obtener píxeles vecinos (ya interpolados en fase 1)
+    ; Esquinas del bloque 2x2 actual
+    movzx rbx, byte [output_buf + r15]          ; P00 (superior izquierdo)
+    movzx rcx, byte [output_buf + r15 + 2]      ; P10 (superior derecho)
+    movzx r8, byte [output_buf + r15 + OUT_WIDTH*2] ; P01 (inferior izquierdo)
+    movzx r9, byte [output_buf + r15 + OUT_WIDTH*2 + 2] ; P11 (inferior derecho)
+
+    ; Píxeles horizontales ya calculados (a,b)
+    movzx r10, byte [output_buf + r15 + 1]      ; a (horizontal entre P00 y P10)
+    movzx r11, byte [output_buf + r15 + OUT_WIDTH*2 + 1] ; h (horizontal entre P01 y P11)
+
+    ; Píxeles verticales ya calculados (c,g)
+    movzx r14, byte [output_buf + r15 + OUT_WIDTH] ; c (vertical entre P00 y P01)
+    movzx rdi, byte [output_buf + r15 + OUT_WIDTH + 2] ; f (vertical entre P10 y P11)
+
+    ; === Calcular píxeles centrales ===
+    
+    ; 1. Píxel d: (2/3)*a + (1/3)*f
+    mov rax, r10
+    imul rax, 2
+    add rax, rdi        ; 2*a + 1*f
+    mov rdx, 0
+    mov rsi, 3
+    div rsi             ; (2*a + 1*f)/3
+    mov [output_buf + r15 + OUT_WIDTH + 1], al ; Escribir d
+
+    ; 2. Píxel e: (1/3)*a + (2/3)*f
+    mov rax, r10
+    mov rdx, rdi
+    imul rdx, 2
+    add rax, rdx        ; 1*a + 2*f
+    mov rdx, 0
+    div rsi             ; (1*a + 2*f)/3
+    mov [output_buf + r15 + OUT_WIDTH + 3], al ; Escribir e (en la siguiente columna)
+
+    ; Continuar con el siguiente bloque
+    add r13, 2
+    jmp .phase2_x_loop
+
+.phase2_next_row:
+    add r12, 2
+    jmp .phase2_y_loop
+
 .done:
     ret
 
@@ -226,4 +302,3 @@ exit_failure:
     mov rax, 60
     mov rdi, 1
     syscall
-

@@ -1,4 +1,3 @@
-
 import tkinter as tk
 from tkinter import filedialog
 from PIL import Image, ImageTk, ImageDraw
@@ -46,10 +45,10 @@ class ImageQuadrantSelector:
         self.cuadrantes = []
         for i in range(4):
             for j in range(4):
-                x0 = j * ancho // 4
-                y0 = i * alto // 4
-                x1 = x0 + ancho // 4
-                y1 = y0 + alto // 4
+                x0 = j * 100
+                y0 = i * 100
+                x1 = x0 + 100
+                y1 = y0 + 100
                 self.cuadrantes.append((x0, y0, x1, y1))
                 self.canvas.create_rectangle(x0, y0, x1, y1, outline='blue')
 
@@ -71,7 +70,7 @@ class ImageQuadrantSelector:
 
         x0, y0, x1, y1 = self.cuadrantes[self.cuadrante_seleccionado]
         cuadrante = self.imagen.crop((x0, y0, x1, y1))
-        cuadrante = cuadrante.resize((64, 64), Image.NEAREST)
+        cuadrante = cuadrante.resize((100, 100), Image.NEAREST)
 
         # Nombre fijo para archivo de entrada al ensamblador
         nombre_archivo = "original_cuadrante.img"
@@ -94,10 +93,10 @@ class ImageQuadrantSelector:
             with open(ruta_img, 'rb') as f:
                 datos = f.read()
                 arr = np.frombuffer(datos, dtype=np.uint8)
-                if len(arr) != 128 * 128:
+                if len(arr) != 400 * 400:
                     print("Tamaño incorrecto para imagen interpolada.")
                     return
-                arr = arr.reshape((128, 128))
+                arr = arr.reshape((400, 400))
                 img = Image.fromarray(arr, mode='L')
                 img_rgb = img.convert("RGB")
                 self.tk_img_interpolada = ImageTk.PhotoImage(img_rgb)
